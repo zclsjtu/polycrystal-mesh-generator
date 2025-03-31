@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 多晶结构网格生成工具说明文档
 
 本项目是一个用于生成多晶材料网格的工具集，基于Julia语言和Gmsh库实现。主要用于材料科学和计算力学领域的晶体结构模拟。
@@ -112,3 +113,7 @@ julia Generate_seperateGBgroup.jl
 2. 根据具体需求选择合适的网格生成脚本
 3. 从较粗的参数开始测试，然后逐步细化
 4. 使用提供的`*_info.txt`文件检查网格质量和统计信息 
+=======
+# polycrystal-mesh-generator
+Some Julia codes for generating 2D FE mesh (structured or triangle), especially for polycrystal with finite physical width.
+>>>>>>> 54b35c9f84c2ba846114a1a92e00f4f1bfe3d59e
