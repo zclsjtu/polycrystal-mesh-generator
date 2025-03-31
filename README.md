@@ -1,7 +1,55 @@
-<<<<<<< HEAD
+
 # 多晶结构网格生成工具说明文档
 
 本项目是一个用于生成多晶材料网格的工具集，基于Julia语言和Gmsh库实现。主要用于材料科学和计算力学领域的晶体结构模拟。
+## 依赖包安装
+
+本项目依赖以下 Julia 包：
+
+1. **Gmsh** - 用于网格生成和操作
+2. **Dates** - 用于日期和时间处理
+3. **Statistics** - 用于统计计算
+4. **DelimitedFiles** - 用于读写文本文件
+5. **LinearAlgebra** - 用于矩阵运算
+6. **Plots** (可选) - 用于可视化 (仅在某些脚本中使用)
+
+### 安装方法
+
+#### 方法一：使用项目的 Project.toml（推荐）
+
+如果您已克隆此仓库，可以直接在项目目录中激活环境并安装所有依赖：
+
+```julia
+# 启动 Julia REPL，在项目目录中执行
+julia
+
+# 进入包管理模式（按 ]）
+activate .
+instantiate
+# 按退格键返回 Julia REPL
+```
+
+#### 方法二：手动安装依赖包
+
+或者，您也可以手动安装所需的包：
+
+```julia
+# 启动 Julia REPL
+julia
+
+# 进入包管理模式（按 ]）
+add Gmsh
+add Dates
+add Statistics
+add DelimitedFiles
+add LinearAlgebra
+# 可选：add Plots
+# 按退格键返回 Julia REPL
+```
+
+### 关于 Gmsh
+
+`Gmsh.jl` 包会自动下载并安装必要的 Gmsh 库文件，用户不需要单独安装 Gmsh 软件。但是，如果您想使用 Gmsh 的图形界面功能，或者想从命令行直接使用 Gmsh，您仍然可以从官方网站 https://gmsh.info/ 下载并安装完整的 Gmsh 软件。
 
 ## 文件概述
 
