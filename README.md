@@ -164,4 +164,4 @@ julia Generate_seperateGBgroup.jl
 =======
 # polycrystal-mesh-generator
 Some Julia codes for generating 2D FE mesh (structured or triangle), especially for polycrystal with finite physical width.
->>>>>>> 54b35c9f84c2ba846114a1a92e00f4f1bfe3d59e
+
