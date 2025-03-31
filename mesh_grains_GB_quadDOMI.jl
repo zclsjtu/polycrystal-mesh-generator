@@ -1263,23 +1263,24 @@ end
 将网格转换为Abaqus INP格式，并将物理组作为节点和单元集合写入
 """
 function export_to_inp(mesh_file, inp_file, phys_group_names, phys_group_surfaces, surface_to_phys_group)
-    println("正在将网格转换为Abaqus INP格式...")
+    println("正在将混合网格转换为Abaqus二维INP格式（优化文件大小）...")
     
     # 如果没有指定INP文件名，则基于mesh文件生成
     if inp_file === nothing
         inp_file = replace(mesh_file, r"\.msh$" => ".inp")
     end
     
-    # 尝试先通过Gmsh导出INP基本格式
-    try
-        Gmsh.gmsh.write(inp_file)
-        println("  Gmsh导出INP失败，将手动构建INP文件...")
-    catch e
-        println("  Gmsh导出INP失败: $e(，将手动构建INP文件..._")
-    end
-    
     # 获取模型中的节点
     nodes_tags, nodes_coords, _ = Gmsh.gmsh.model.mesh.getNodes()
+    
+    # 创建节点坐标字典
+    node_coords = Dict{Int, Vector{Float64}}()
+    for i in 1:length(nodes_tags)
+        node_id = Int(nodes_tags[i])
+        x = nodes_coords[3*i-2]
+        y = nodes_coords[3*i-1]
+        node_coords[node_id] = [x, y]
+    end
     
     # 获取模型中的单元
     element_types = Dict()
@@ -1293,7 +1294,10 @@ function export_to_inp(mesh_file, inp_file, phys_group_names, phys_group_surface
     end
     
     # 对每个表面获取单元信息
+    surface_elements = Dict{Int, Vector{Tuple{Int, Int, Vector{Int}}}}()  # 表面ID => [(元素类型,元素ID,节点列表),...]
+    
     for surface_tag in all_surfaces
+        surface_elements[surface_tag] = []
         types, tags, node_tags = Gmsh.gmsh.model.mesh.getElements(2, surface_tag)
         
         for i in 1:length(types)
@@ -1304,177 +1308,297 @@ function export_to_inp(mesh_file, inp_file, phys_group_names, phys_group_surface
                 element_node_tags[element_type] = []
             end
             
+            # 添加元素到全局列表
             append!(element_types[element_type], repeat([element_type], length(tags[i])))
             append!(element_tags[element_type], tags[i])
             append!(element_node_tags[element_type], node_tags[i])
-        end
-    end
-    
-    # 创建节点和单元集合
-    node_sets = Dict{String, Set{Int}}()
-    element_sets = Dict{String, Dict{Int, Set{Int}}}()
-    
-    # 对每个物理组创建集合
-    for (group_id, name) in phys_group_names
-        if !haskey(phys_group_surfaces, group_id)
-            continue
-        end
-        
-        # 初始化该组的节点集和单元集
-        node_sets[name] = Set{Int}()
-        element_sets[name] = Dict{Int, Set{Int}}()
-        
-        # 收集该组中所有表面的单元和节点
-        for surface_tag in phys_group_surfaces[group_id]
-            types, tags, node_tags = Gmsh.gmsh.model.mesh.getElements(2, surface_tag)
             
-            for i in 1:length(types)
-                element_type = types[i]
-                
-                # 初始化该类型单元的集合
-                if !haskey(element_sets[name], element_type)
-                    element_sets[name][element_type] = Set{Int}()
-                end
-                
-                # 添加单元到集合
-                union!(element_sets[name][element_type], Set(tags[i]))
-                
-                # 添加节点到集合
-                for j in 1:length(node_tags[i])
-                    node_id = node_tags[i][j]
-                    push!(node_sets[name], node_id)
-                end
+            # 为该表面存储元素信息
+            nodes_per_element = element_type == 2 ? 3 : (element_type == 3 ? 4 : 0)
+            for j in 1:length(tags[i])
+                elem_id = tags[i][j]
+                start_idx = (j-1) * nodes_per_element + 1
+                end_idx = start_idx + nodes_per_element - 1
+                node_list = node_tags[i][start_idx:end_idx]
+                push!(surface_elements[surface_tag], (element_type, elem_id, node_list))
             end
         end
     end
     
-    # 打开INP文件进行写入
+    # 创建修正后的节点顺序
+    corrected_elements = Dict()
+    
+    # 统计修正信息
+    total_elements = 0
+    total_corrected = 0
+    
+    for (element_type, tags) in element_tags
+        # 根据Gmsh单元类型映射到Abaqus二维单元类型
+        abaqus_type = if element_type == 2  # 三角形
+            "CPS3"  # 平面应力三角形
+        elseif element_type == 3  # 四边形
+            "CPS4"  # 平面应力四边形
+        else
+            "Unknown"
+        end
+        
+        # 确定每个单元有多少个节点
+        nodes_per_element = if element_type == 2  # 三角形
+            3
+        elseif element_type == 3  # 四边形
+            4
+        else
+            error("未知的单元类型: $element_type")
+        end
+        
+        # 获取该类型的所有单元节点连接关系
+        etags = element_tags[element_type]
+        enode_tags = element_node_tags[element_type]
+        
+        # 创建修正节点顺序的容器
+        corrected_element_nodes = []
+        
+        # 检查并修正每个单元的节点顺序
+        negative_count = 0
+        for i in 1:length(etags)
+            element_id = etags[i]
+            start_idx = (i-1) * nodes_per_element + 1
+            end_idx = start_idx + nodes_per_element - 1
+            
+            node_list = enode_tags[start_idx:end_idx]
+            
+            # 检查并修正节点顺序
+            if element_type == 2 && length(node_list) == 3  # 三角形
+                if haskey(node_coords, node_list[1]) && 
+                   haskey(node_coords, node_list[2]) && 
+                   haskey(node_coords, node_list[3])
+                    
+                    p1 = node_coords[node_list[1]]
+                    p2 = node_coords[node_list[2]]
+                    p3 = node_coords[node_list[3]]
+                    
+                    # 计算有符号面积
+                    signed_area = 0.5 * ((p2[1] - p1[1]) * (p3[2] - p1[2]) - 
+                                         (p3[1] - p1[1]) * (p2[2] - p1[2]))
+                    
+                    if signed_area < 0
+                        # 顺时针顺序，需要修正为逆时针
+                        negative_count += 1
+                        node_list = [node_list[1], node_list[3], node_list[2]]
+                    end
+                end
+            elseif element_type == 3 && length(node_list) == 4  # 四边形
+                if haskey(node_coords, node_list[1]) && 
+                   haskey(node_coords, node_list[2]) && 
+                   haskey(node_coords, node_list[3]) && 
+                   haskey(node_coords, node_list[4])
+                    
+                    p1 = node_coords[node_list[1]]
+                    p2 = node_coords[node_list[2]]
+                    p3 = node_coords[node_list[3]]
+                    p4 = node_coords[node_list[4]]
+                    
+                    # 四边形需要特别注意，确保所有点形成凸四边形
+                    # 计算两个三角形的面积
+                    signed_area1 = 0.5 * ((p2[1] - p1[1]) * (p3[2] - p1[2]) - 
+                                          (p3[1] - p1[1]) * (p2[2] - p1[2]))
+                    signed_area2 = 0.5 * ((p3[1] - p1[1]) * (p4[2] - p1[2]) - 
+                                          (p4[1] - p1[1]) * (p3[2] - p1[2]))
+                    
+                    if signed_area1 < 0 || signed_area2 < 0
+                        # 如果任一三角形为负面积，反转节点顺序
+                        negative_count += 1
+                        node_list = [node_list[1], node_list[4], node_list[3], node_list[2]]
+                    end
+                end
+            end
+            
+            # 添加修正后的节点
+            append!(corrected_element_nodes, node_list)
+        end
+        
+        # 统计信息
+        total_elements += length(etags)
+        total_corrected += negative_count
+        
+        println("单元类型 $(abaqus_type): 检测并修正了 $negative_count / $(length(etags)) 个节点顺序错误的单元")
+        
+        # 保存修正后的单元数据
+        corrected_elements[element_type] = (
+            ids = etags,
+            nodes = corrected_element_nodes,
+            nodes_per_element = nodes_per_element,
+            abaqus_type = abaqus_type
+        )
+    end
+    
+    println("总计: 检测并修正了 $total_corrected / $total_elements 个节点顺序错误的单元 ($(round(total_corrected/total_elements*100, digits=2))%)")
+    
+    # 构建物理组到单元的映射（为了减少重复数据）
+    phys_group_to_elements = Dict{Int, Dict{Int, Vector{Int}}}()  # 物理组ID => {单元类型 => [单元ID]}
+    
+    for (phys_group_id, surfaces) in phys_group_surfaces
+        if !haskey(phys_group_to_elements, phys_group_id)
+            phys_group_to_elements[phys_group_id] = Dict{Int, Vector{Int}}()
+        end
+        
+        for surface_tag in surfaces
+            if haskey(surface_elements, surface_tag)
+                for (elem_type, elem_id, _) in surface_elements[surface_tag]
+                    if !haskey(phys_group_to_elements[phys_group_id], elem_type)
+                        phys_group_to_elements[phys_group_id][elem_type] = []
+                    end
+                    push!(phys_group_to_elements[phys_group_id][elem_type], elem_id)
+                end
+            end
+        end
+        
+        # 去重
+        for (elem_type, ids) in phys_group_to_elements[phys_group_id]
+            unique!(phys_group_to_elements[phys_group_id][elem_type])
+        end
+    end
+    
+    # 打开INP文件进行写入 - 使用缓冲写入减少I/O操作
     open(inp_file, "w") do io
         # 写入文件头
         write(io, "*Heading\n")
-        write(io, "模型由Julia Gmsh API生成的多晶材料结构化网格\n")
+        write(io, "多晶材料混合网格（节点顺序已修正，文件大小已优化）\n")
         
-        # 写入节点部分
+        # 写入Part部分开始
+        write(io, "**\n** PARTS\n**\n")
+        write(io, "*Part, name=Part-1\n")
+        
+        # 写入节点部分 - 只输出XY坐标（二维模型），限制小数位数
         write(io, "*Node\n")
         for i in 1:length(nodes_tags)
             node_id = Int(nodes_tags[i])
             x = nodes_coords[3*i-2]
             y = nodes_coords[3*i-1]
-            z = nodes_coords[3*i]
-            write(io, "$(node_id), $(x), $(y), $(z)\n")
+            # 限制为8位小数精度，减小文件大小
+            write(io, "$(node_id), $(round(x, digits=8)), $(round(y, digits=8))\n")
         end
         
-        # 写入单元部分 - 按单元类型分组
-        for (element_type, tags) in element_tags
-            # 根据Gmsh单元类型映射到Abaqus单元类型
-            abaqus_type = if element_type == 2  # 三角形
-                "CPS3"  # 平面应力三角形
-            elseif element_type == 3  # 四边形
-                "CPS4"  # 平面应力四边形
-            else
-                "Unknown"
-            end
+        # 写入单元部分 - 使用修正后的节点顺序
+        for (element_type, data) in corrected_elements
+            write(io, "*Element, type=$(data.abaqus_type)\n")
             
-            write(io, "*Element, type=$(abaqus_type)\n")
-            
-            # 获取该类型的所有单元节点连接关系
-            etags = element_tags[element_type]
-            enode_tags = element_node_tags[element_type]
-            
-            # 确定每个单元有多少个节点
-            nodes_per_element = if element_type == 2  # 三角形
-                3
-            elseif element_type == 3  # 四边形
-                4
-            else
-                error("未知的单元类型: $element_type")
-            end
-            
-            # 写入单元连接关系
-            for i in 1:length(etags)
-                element_id = etags[i]
-                start_idx = (i-1) * nodes_per_element + 1
-                end_idx = start_idx + nodes_per_element - 1
+            for i in 1:length(data.ids)
+                element_id = data.ids[i]
+                start_idx = (i-1) * data.nodes_per_element + 1
+                end_idx = start_idx + data.nodes_per_element - 1
                 
-                node_list = enode_tags[start_idx:end_idx]
-                node_str = join(node_list, ", ")
+                # 使用修正后的节点顺序
+                node_list = data.nodes[start_idx:end_idx]
                 
-                write(io, "$(element_id), $(node_str)\n")
-            end
-        end
-        
-        # 写入节点集
-        for (name, nodes) in node_sets
-            # 替换名称中的空格和特殊字符
-            set_name = replace(name, r"[^a-zA-Z0-9_]" => "_")
-            write(io, "*Nset, nset=$(set_name)_nodes\n")
-            
-            # 每行最多16个节点ID
-            sorted_nodes = sort(collect(nodes))
-            for i in 1:16:length(sorted_nodes)
-                end_idx = min(i+15, length(sorted_nodes))
-                node_str = join(sorted_nodes[i:end_idx], ", ")
-                write(io, node_str * "\n")
-            end
-        end
-        
-        # 写入单元集
-        for (name, type_elements) in element_sets
-            set_name = replace(name, r"[^a-zA-Z0-9_]" => "_")
-            
-            for (element_type, elements) in type_elements
-                write(io, "*Elset, elset=$(set_name)_elements_$(element_type)\n")
-                
-                # 每行最多16个单元ID
-                sorted_elements = sort(collect(elements))
-                for i in 1:16:length(sorted_elements)
-                    end_idx = min(i+15, length(sorted_elements))
-                    element_str = join(sorted_elements[i:end_idx], ", ")
-                    write(io, element_str * "\n")
+                # 改用字符串格式化而非连接，减少内存使用
+                if data.nodes_per_element == 3
+                    write(io, "$(element_id), $(node_list[1]), $(node_list[2]), $(node_list[3])\n")
+                elseif data.nodes_per_element == 4
+                    write(io, "$(element_id), $(node_list[1]), $(node_list[2]), $(node_list[3]), $(node_list[4])\n")
                 end
             end
-            
-            # 创建一个包含所有该物理组单元的集合
-            write(io, "*Elset, elset=$(set_name)_all_elements\n")
-            all_elements = []
-            for elements in values(type_elements)
-                append!(all_elements, collect(elements))
-            end
-            sort!(all_elements)
-            
-            for i in 1:16:length(all_elements)
-                end_idx = min(i+15, length(all_elements))
-                element_str = join(all_elements[i:end_idx], ", ")
-                write(io, element_str * "\n")
+        end
+        
+        # 创建包含所有节点的集合
+        write(io, "*Nset, nset=AllNodes, generate\n")
+        min_node = minimum(Int.(nodes_tags))
+        max_node = maximum(Int.(nodes_tags))
+        write(io, "$(min_node), $(max_node), 1\n")
+        
+        # 只创建必要的单元集合 - 所有单元
+        all_elements = []
+        for (_, data) in corrected_elements
+            append!(all_elements, data.ids)
+        end
+        
+        if !isempty(all_elements)
+            write(io, "*Elset, elset=AllElements, generate\n")
+            min_elem = minimum(all_elements)
+            max_elem = maximum(all_elements)
+            write(io, "$(min_elem), $(max_elem), 1\n")
+        end
+        
+        # 只为重要的物理组创建单元集合（例如AllGrains和AllBoundaries）
+        # 这里大幅减少文件大小
+        important_groups = []
+        for (phys_group_id, name) in phys_group_names
+            if lowercase(name) == "allgrains" || lowercase(name) == "allboundaries"
+                push!(important_groups, phys_group_id)
             end
         end
         
-        # 在文件末尾添加材料和截面属性的示例（用户需要根据实际情况进行修改）
-        write(io, "\n** 材料定义示例（用户需要根据实际情况修改）\n")
+        for phys_group_id in important_groups
+            if haskey(phys_group_names, phys_group_id) && haskey(phys_group_to_elements, phys_group_id)
+                group_name = phys_group_names[phys_group_id]
+                
+                # 收集该物理组中的所有单元ID
+                all_group_elements = []
+                for (_, elem_ids) in phys_group_to_elements[phys_group_id]
+                    append!(all_group_elements, elem_ids)
+                end
+                
+                # 如果元素数量很多，尝试使用generate语法
+                if !isempty(all_group_elements)
+                    # 排序并去重
+                    unique!(sort!(all_group_elements))
+                    
+                    # 检查是否可以使用generate语法（连续的ID）
+                    is_continuous = true
+                    for i in 2:length(all_group_elements)
+                        if all_group_elements[i] != all_group_elements[i-1] + 1
+                            is_continuous = false
+                            break
+                        end
+                    end
+                    
+                    # 写入单元集合
+                    if is_continuous && length(all_group_elements) > 10
+                        write(io, "*Elset, elset=$(group_name), generate\n")
+                        write(io, "$(all_group_elements[1]), $(all_group_elements[end]), 1\n")
+                    else
+                        # 只有当元素数量合理时才写入详细列表
+                        write(io, "*Elset, elset=$(group_name)\n")
+                        
+                        # 每行最多16个ID，减少行数
+                        chunk_size = 16
+                        for i in 1:chunk_size:length(all_group_elements)
+                            end_i = min(i + chunk_size - 1, length(all_group_elements))
+                            id_chunk = all_group_elements[i:end_i]
+                            write(io, join(id_chunk, ", "))
+                            write(io, "\n")
+                        end
+                    end
+                end
+            end
+        end
+        
+        # 添加截面属性定义
+        write(io, "** Section: Section-1\n")
+        write(io, "*Solid Section, elset=AllElements, material=Material-1\n")
+        write(io, "1.0,\n")  # 厚度设置为1.0
+        
+        # 结束Part部分
+        write(io, "*End Part\n")
+        
+        # 添加装配部分
+        write(io, "**\n** ASSEMBLY\n**\n")
+        write(io, "*Assembly, name=Assembly\n")
+        write(io, "*Instance, name=Part-1-1, part=Part-1\n")
+        write(io, "*End Instance\n")
+        write(io, "*End Assembly\n")
+        
+        # 添加材料定义
+        write(io, "**\n** MATERIALS\n**\n")
         write(io, "*Material, name=Material-1\n")
         write(io, "*Elastic\n")
-        write(io, " 210000.0, 0.3\n")
-        
-        # 为每个物理组定义截面属性
-        for name in keys(node_sets)
-            set_name = replace(name, r"[^a-zA-Z0-9_]" => "_")
-            write(io, "\n** 截面定义 - $(name)\n")
-            write(io, "*Solid Section, elset=$(set_name)_all_elements, material=Material-1\n")
-            write(io, "1.0\n")  # 截面厚度
-        end
-        
-        # 添加分析步骤示例
-        write(io, "\n** 分析步骤示例\n")
-        write(io, "*Step, name=Step-1\n")
-        write(io, "*Static\n")
-        write(io, "1., 1., 1e-05, 1.\n")
-        write(io, "*End Step\n")
+        write(io, "200000., 0.3\n")
     end
     
-    println("Abaqus INP格式文件已保存到: $inp_file")
-    println("- 已将物理组导出为节点集(Nset)和单元集(Elset)")
-    println("- 每个物理组生成了独立的节点集和单元集")
-    println("- 文件包含了基本的材料和截面属性定义示例")
+    # 输出文件大小信息
+    file_size = round(filesize(inp_file) / (1024^2), digits=2)  # MB
+    println("Abaqus二维INP格式文件已保存到: $inp_file")
+    println("文件大小: $(file_size) MB")
     
     return inp_file
 end

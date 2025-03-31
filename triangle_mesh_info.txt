@@ -1,5 +1,5 @@
 # 多晶材料三角形网格信息文件 (晶界细密-晶粒粗糙版)
-# 生成时间: 2025-03-31 18:48:29
+# 生成时间: 2025-03-31 23:52:13
 #
 # 参数设置:
 # - 几何文件: equiaxed_grains_with_boundaries.geo
@@ -690,5 +690,5 @@
 # 网格文件保存到: triangle_mesh.msh
 # VTK格式保存到: triangle_mesh.vtk
 # Abaqus INP格式保存到: triangle_mesh.inp
-# 总优化时间: 138.56s (限制: 60s)
-# 总用时: 228.77s
+# 总优化时间: 165.85s (限制: 60s)
+# 总用时: 245.45s
