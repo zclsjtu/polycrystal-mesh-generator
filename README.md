@@ -26,8 +26,7 @@ julia
 # 进入包管理模式（按 ]）
 activate .
 instantiate
-# 按退格键返回 Julia REPL
-接着用add安装依赖
+
 ```
 
 #### 方法二：手动安装依赖包
