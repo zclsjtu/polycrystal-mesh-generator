@@ -27,6 +27,7 @@ julia
 activate .
 instantiate
 # 按退格键返回 Julia REPL
+接着用add安装依赖
 ```
 
 #### 方法二：手动安装依赖包
@@ -64,7 +65,7 @@ add LinearAlgebra
 
 ### 1. mesh_grains_GB_alltri.jl
 
-此文件用于生成全三角形网格，特点是晶界区域网格细密，晶粒内部网格较粗糙。
+此文件借助输入的geo文件（由Generate_seperateGBgroup.jl生成）生成全三角形网格，特点是晶界区域网格细密，晶粒内部网格较粗糙。
 
 **主要功能**：
 - 生成纯三角形网格
@@ -79,7 +80,7 @@ julia mesh_grains_GB_alltri.jl
 
 ### 2. mesh_grains_GB_mix.jl
 
-此文件用于生成混合类型网格，晶界区域使用三角形网格，晶粒内部使用四边形和三角形混合网格。
+此文件借助输入的geo文件（由Generate_seperateGBgroup.jl生成），生成混合类型网格，晶界区域使用三角形网格，晶粒内部使用四边形和三角形混合网格。
 
 **主要功能**：
 - 生成混合网格（三角形+四边形）
@@ -94,12 +95,12 @@ julia mesh_grains_GB_mix.jl
 
 ### 3. mesh_grains_GB_quadDOMI.jl
 
-此文件用于生成四边形主导网格，尽可能多地使用四边形网格单元，必要时使用三角形填充不规则区域。
+此文件借助输入的geo文件（由Generate_seperateGBgroup.jl生成），生成四边形主导网格，尽可能多地使用四边形网格单元，必要时使用三角形填充不规则区域。
 
 **主要功能**：
 - 生成四边形主导网格
 - 使用高级拓扑算法识别适合四边形的区域
-- 晶界和晶粒区域都尽可能使用四边形
+- 晶界和晶粒区域都尽可能使用四边形（晶界正常情况下全是四边形）
 - 在不规则或复杂区域使用三角形填充
 
 **使用方法**：
@@ -109,14 +110,13 @@ julia mesh_grains_GB_quadDOMI.jl
 
 ### 4. Generate_seperateGBgroup.jl
 
-此文件用于分析和生成分组的晶界，可以将不同类型的晶界（如高角度、低角度等）分为不同组，便于后续建模和分析。
-需要输入geo文件，可以有neper等生成，或者自己编写。
+此文件用于产生有厚度晶界，并将信息记录进equiaxed_grains_with_boundaries.geo文件
+需要输入geo文件，可以由neper等生成，或者自己编写。（需要在jl文件修改输入的文件名字）
 
 **主要功能**：
-- 解析几何文件并提取晶界信息
-- 计算晶界特性（如取向、角度等）
+- 根据边平移算法产生物理厚度的晶界
 - 根据特定标准将晶界分组
-- 生成包含分组信息的新几何文件
+- 生成包含分组信息的新几何geo文件
 
 **使用方法**：
 ```julia
@@ -159,9 +159,7 @@ julia Generate_seperateGBgroup.jl
 
 1. 首先使用`Generate_seperateGBgroup.jl`分析和准备几何模型
 2. 根据具体需求选择合适的网格生成脚本
-3. 从较粗的参数开始测试，然后逐步细化
+3. 有概率无法生成尺寸具有强烈对比的网格，请仔细选择参数。
 4. 使用提供的`*_info.txt`文件检查网格质量和统计信息 
-=======
-# polycrystal-mesh-generator
-Some Julia codes for generating 2D FE mesh (structured or triangle), especially for polycrystal with finite physical width.
+
 
