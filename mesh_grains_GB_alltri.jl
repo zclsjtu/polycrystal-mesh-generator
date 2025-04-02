@@ -665,29 +665,6 @@ function export_to_inp(mesh_file, inp_file, phys_group_names, phys_group_surface
                         node_list = [node_list[1], node_list[3], node_list[2]]
                     end
                 end
-            elseif element_type == 3 && length(node_list) == 4  # 四边形
-                if haskey(node_coords, node_list[1]) && 
-                   haskey(node_coords, node_list[2]) && 
-                   haskey(node_coords, node_list[3]) && 
-                   haskey(node_coords, node_list[4])
-                    
-                    p1 = node_coords[node_list[1]]
-                    p2 = node_coords[node_list[2]]
-                    p3 = node_coords[node_list[3]]
-                    p4 = node_coords[node_list[4]]
-                    
-                    # 将四边形分解为两个三角形，检查它们的面积符号
-                    signed_area1 = 0.5 * ((p2[1] - p1[1]) * (p3[2] - p1[2]) - 
-                                          (p3[1] - p1[1]) * (p2[2] - p1[2]))
-                    signed_area2 = 0.5 * ((p3[1] - p1[1]) * (p4[2] - p1[2]) - 
-                                          (p4[1] - p1[1]) * (p3[2] - p1[2]))
-                    
-                    if signed_area1 < 0 || signed_area2 < 0
-                        # 如果任一三角形为负面积，反转节点顺序
-                        negative_count += 1
-                        node_list = [node_list[1], node_list[4], node_list[3], node_list[2]]
-                    end
-                end
             end
             
             # 添加修正后的节点
@@ -709,86 +686,179 @@ function export_to_inp(mesh_file, inp_file, phys_group_names, phys_group_surface
     open(inp_file, "w") do io
         # 写入文件头
         write(io, "*Heading\n")
-        write(io, "模型由Julia Gmsh API生成的多晶材料二维三角形网格 (节点顺序已修正)\n")
+        write(io, "模型由Julia Gmsh API生成的多晶材料二维三角形网格\n")
         
-        # 写入Part部分开始
-        write(io, "**\n** PARTS\n**\n")
-        write(io, "*Part, name=Part-1\n")
-        
-        # 写入节点部分 - 只输出XY坐标（二维模型）
+        # 写入节点部分
         write(io, "*Node\n")
-        for i in 1:length(nodes_tags)
-            node_id = Int(nodes_tags[i])
-            x = nodes_coords[3*i-2]
-            y = nodes_coords[3*i-1]
-            # 二维格式，只输出XY坐标
-            #write(io, "$(node_id), $(x), $(y)\n")
-            write(io, "$(node_id), $(round(x, digits=8)), $(round(y, digits=8))\n")
+        for (node_id, coords) in node_coords
+            x, y = coords
+            write(io, "$(node_id), $(x), $(y), 0.0\n")
         end
         
-        # 写入单元部分 - 使用修正后的节点顺序
-        for (element_type, data) in corrected_elements
-            write(io, "*Element, type=$(data.abaqus_type)\n")
+        # 写入单元部分
+        write(io, "*Element, type=CPS3\n")  # 使用CPS3表示平面应力三角形单元
+        
+        # 收集所有表面的单元
+        all_elements = Dict{Int, Vector{Int}}()  # 单元ID到节点列表的映射
+        element_to_surface = Dict{Int, Int}()    # 单元ID到表面ID的映射
+        
+        # 遍历所有表面收集单元信息
+        for surface_tag in vcat(values(phys_group_surfaces)...)
+            elem_types, elem_tags, elem_node_tags = Gmsh.gmsh.model.mesh.getElements(2, surface_tag)
             
-            for i in 1:length(data.ids)
-                element_id = data.ids[i]
-                start_idx = (i-1) * data.nodes_per_element + 1
-                end_idx = start_idx + data.nodes_per_element - 1
-                
-                # 使用修正后的节点顺序
-                node_list = data.nodes[start_idx:end_idx]
-                node_str = join(node_list, ", ")
-                
-                write(io, "$(element_id), $(node_str)\n")
+            for i in 1:length(elem_types)
+                if elem_types[i] == 2  # 三角形单元
+                    nodes_per_elem = 3
+                    for j in 1:length(elem_tags[i])
+                        elem_id = elem_tags[i][j]
+                        start_idx = (j-1) * nodes_per_elem + 1
+                        end_idx = start_idx + nodes_per_elem - 1
+                        node_list = elem_node_tags[i][start_idx:end_idx]
+                        
+                        # 存储单元信息
+                        all_elements[elem_id] = node_list
+                        element_to_surface[elem_id] = surface_tag
+                        
+                        # 写入单元定义
+                        write(io, "$(elem_id)")
+                        for node_id in node_list
+                            write(io, ", $(node_id)")
+                        end
+                        write(io, "\n")
+                    end
+                end
             end
         end
         
-        # 创建包含所有节点和单元的集合
-        write(io, "*Nset, nset=AllNodes, generate\n")
-        min_node = minimum(Int.(nodes_tags))
-        max_node = maximum(Int.(nodes_tags))
-        write(io, "$(min_node), $(max_node), 1\n")
-        
-        # 收集所有单元ID
-        all_elements = []
-        for (_, data) in corrected_elements
-            append!(all_elements, data.ids)
+        # 创建物理组的单元和节点集合
+        for (group_id, name) in phys_group_names
+            if haskey(phys_group_surfaces, group_id)
+                # 收集该物理组的所有单元和节点
+                group_elements = Set{Int}()
+                group_nodes = Set{Int}()
+                
+                for surface_tag in phys_group_surfaces[group_id]
+                    # 找到属于该表面的所有单元
+                    for (elem_id, surface) in element_to_surface
+                        if surface == surface_tag
+                            push!(group_elements, elem_id)
+                            # 添加该单元的所有节点
+                            if haskey(all_elements, elem_id)
+                                union!(group_nodes, all_elements[elem_id])
+                            end
+                        end
+                    end
+                end
+                
+                # 只有当集合非空时才创建
+                if !isempty(group_elements)
+                    # 创建单元集
+                    write(io, "*Elset, elset=$(name)\n")
+                    elem_array = sort(collect(group_elements))
+                    for chunk in Iterators.partition(elem_array, 16)
+                        write(io, join(chunk, ", "))
+                        write(io, "\n")
+                    end
+                    
+                    # 创建节点集
+                    write(io, "*Nset, nset=$(name)\n")
+                    node_array = sort(collect(group_nodes))
+                    for chunk in Iterators.partition(node_array, 16)
+                        write(io, join(chunk, ", "))
+                        write(io, "\n")
+                    end
+                end
+            end
         end
         
-        # 创建包含所有单元的集合
-        if !isempty(all_elements)
-            write(io, "*Elset, elset=AllElements, generate\n")
-            min_elem = minimum(all_elements)
-            max_elem = maximum(all_elements)
-            write(io, "$(min_elem), $(max_elem), 1\n")
+        # 创建总的晶界和晶粒集合
+        all_boundary_elements = Set{Int}()
+        all_boundary_nodes = Set{Int}()
+        all_grain_elements = Set{Int}()
+        all_grain_nodes = Set{Int}()
+        
+        # 收集所有晶界和晶粒的单元和节点
+        for (group_id, name) in phys_group_names
+            if startswith(lowercase(name), "boundary") && lowercase(name) != "allboundaries"
+                if haskey(phys_group_surfaces, group_id)
+                    for surface_tag in phys_group_surfaces[group_id]
+                        for (elem_id, surface) in element_to_surface
+                            if surface == surface_tag
+                                push!(all_boundary_elements, elem_id)
+                                if haskey(all_elements, elem_id)
+                                    union!(all_boundary_nodes, all_elements[elem_id])
+                                end
+                            end
+                        end
+                    end
+                end
+            elseif startswith(lowercase(name), "grain") && lowercase(name) != "allgrains"
+                if haskey(phys_group_surfaces, group_id)
+                    for surface_tag in phys_group_surfaces[group_id]
+                        for (elem_id, surface) in element_to_surface
+                            if surface == surface_tag
+                                push!(all_grain_elements, elem_id)
+                                if haskey(all_elements, elem_id)
+                                    union!(all_grain_nodes, all_elements[elem_id])
+                                end
+                            end
+                        end
+                    end
+                end
+            end
         end
         
-        # 添加截面属性定义
-        write(io, "** Section: Section-1\n")
-        write(io, "*Solid Section, elset=AllElements, material=Material-1\n")
-        write(io, "1.0,\n")  # 明确设置厚度为1.0
+        # 写入总的晶界集合
+        if !isempty(all_boundary_elements)
+            write(io, "*Elset, elset=AllBoundaries\n")
+            boundary_elem_array = sort(collect(all_boundary_elements))
+            for chunk in Iterators.partition(boundary_elem_array, 16)
+                write(io, join(chunk, ", "))
+                write(io, "\n")
+            end
+            
+            write(io, "*Nset, nset=AllBoundaries\n")
+            boundary_node_array = sort(collect(all_boundary_nodes))
+            for chunk in Iterators.partition(boundary_node_array, 16)
+                write(io, join(chunk, ", "))
+                write(io, "\n")
+            end
+        end
         
-        # 结束Part部分
-        write(io, "*End Part\n")
-        
-        # 添加装配部分
-        write(io, "**  \n**\n** ASSEMBLY\n**\n")
-        write(io, "*Assembly, name=Assembly\n")
-        write(io, "**  \n")
-        write(io, "*Instance, name=Part-1-1, part=Part-1\n")
-        write(io, "*End Instance\n")
-        write(io, "**  \n")
-        write(io, "*End Assembly\n")
-        
-        # 添加材料定义
-        write(io, "** \n** MATERIALS\n** \n")
-        write(io, "*Material, name=Material-1\n")
-        write(io, "*Elastic\n")
-        write(io, "200000., 0.3\n")
+        # 写入总的晶粒集合
+        if !isempty(all_grain_elements)
+            write(io, "*Elset, elset=AllGrains\n")
+            grain_elem_array = sort(collect(all_grain_elements))
+            for chunk in Iterators.partition(grain_elem_array, 16)
+                write(io, join(chunk, ", "))
+                write(io, "\n")
+            end
+            
+            write(io, "*Nset, nset=AllGrains\n")
+            grain_node_array = sort(collect(all_grain_nodes))
+            for chunk in Iterators.partition(grain_node_array, 16)
+                write(io, join(chunk, ", "))
+                write(io, "\n")
+            end
+        end
     end
     
-    println("Abaqus二维INP格式文件已保存到: $inp_file（节点顺序已修正）")
+    println("Abaqus二维INP格式文件已保存到: $inp_file")
     return inp_file
+end
+
+# 添加辅助函数来检查是否可以使用generate
+function can_use_generate(array)
+    if length(array) < 2
+        return false
+    end
+    # 检查是否是连续的序列
+    for i in 2:length(array)
+        if array[i] != array[i-1] + 1
+            return false
+        end
+    end
+    return true
 end
 
 """
