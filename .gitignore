@@ -1,0 +1,27 @@
+# 创建并编辑.gitignore文件
+echo "# Abaqus INP files
+*.inp
+
+# Mesh files
+*.msh
+*.vtk
+
+# Output files
+*_info.txt
+*.txt
+
+# Julia environment
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+*.jl.*.mem
+Manifest.toml
+
+# System files
+.DS_Store
+.vscode/
+*.swp
+*~
+
+# Log files
+*.log" > .gitignore
